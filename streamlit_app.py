@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from typing import List, Dict
 
 import numpy as np
 import pandas as pd
@@ -7,26 +8,80 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="NIFTY Live Analyzer", layout="wide")
+st.set_page_config(page_title="NIFTY 50 Stock Scanner", layout="wide")
+
+NIFTY50 = {
+    "RELIANCE.NS": "Reliance Industries",
+    "HDFCBANK.NS": "HDFC Bank",
+    "ICICIBANK.NS": "ICICI Bank",
+    "INFY.NS": "Infosys",
+    "TCS.NS": "TCS",
+    "BHARTIARTL.NS": "Bharti Airtel",
+    "SBIN.NS": "State Bank of India",
+    "LT.NS": "Larsen & Toubro",
+    "HINDUNILVR.NS": "Hindustan Unilever",
+    "ITC.NS": "ITC",
+    "KOTAKBANK.NS": "Kotak Mahindra Bank",
+    "AXISBANK.NS": "Axis Bank",
+    "BAJFINANCE.NS": "Bajaj Finance",
+    "ASIANPAINT.NS": "Asian Paints",
+    "MARUTI.NS": "Maruti Suzuki",
+    "SUNPHARMA.NS": "Sun Pharma",
+    "M&M.NS": "Mahindra & Mahindra",
+    "ULTRACEMCO.NS": "UltraTech Cement",
+    "NTPC.NS": "NTPC",
+    "POWERGRID.NS": "Power Grid",
+    "TITAN.NS": "Titan",
+    "NESTLEIND.NS": "Nestle India",
+    "BAJAJFINSV.NS": "Bajaj Finserv",
+    "HCLTECH.NS": "HCL Technologies",
+    "WIPRO.NS": "Wipro",
+    "TECHM.NS": "Tech Mahindra",
+    "TATAMOTORS.NS": "Tata Motors",
+    "TATASTEEL.NS": "Tata Steel",
+    "JSWSTEEL.NS": "JSW Steel",
+    "INDUSINDBK.NS": "IndusInd Bank",
+    "ADANIENT.NS": "Adani Enterprises",
+    "ADANIPORTS.NS": "Adani Ports",
+    "ONGC.NS": "ONGC",
+    "COALINDIA.NS": "Coal India",
+    "HDFCLIFE.NS": "HDFC Life",
+    "SBILIFE.NS": "SBI Life",
+    "BAJAJ-AUTO.NS": "Bajaj Auto",
+    "HEROMOTOCO.NS": "Hero MotoCorp",
+    "GRASIM.NS": "Grasim",
+    "EICHERMOT.NS": "Eicher Motors",
+    "DRREDDY.NS": "Dr Reddy's",
+    "CIPLA.NS": "Cipla",
+    "BRITANNIA.NS": "Britannia",
+    "SHRIRAMFIN.NS": "Shriram Finance",
+    "APOLLOHOSP.NS": "Apollo Hospitals",
+    "BEL.NS": "Bharat Electronics",
+    "TRENT.NS": "Trent",
+    "BPCL.NS": "BPCL",
+    "TATACONSUM.NS": "Tata Consumer",
+    "LTIM.NS": "LTIMindtree",
+}
 
 @dataclass
-class SignalResult:
+class ScanRow:
+    symbol: str
+    name: str
     signal: str
-    strength: int
     score: float
+    strength: int
     close: float
+    chg_pct: float
+    volume_ratio: float
+    rsi: float
+    sma20: float
+    sma50: float
     entry_low: float
     entry_high: float
     stop_loss: float
     target_1: float
     target_2: float
-    reasons: list
-    rsi: float
-    atr: float
-    sma20: float
-    sma50: float
-    volume: float
-    vol_avg: float
+    reasons: List[str]
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -50,196 +105,237 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 @st.cache_data(ttl=300)
-def fetch_data(period: str, interval: str) -> pd.DataFrame:
-    df = yf.download("^NSEI", period=period, interval=interval, auto_adjust=False, progress=False)
-    if df.empty:
-        raise ValueError("No data returned for ^NSEI")
+def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
+    df = yf.download(symbol, period=period, interval=interval, auto_adjust=False, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
-    return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    return df
 
 
-def compute_signal(df: pd.DataFrame) -> SignalResult:
-    d = df.copy()
-    d["SMA20"] = d["Close"].rolling(20).mean()
-    d["SMA50"] = d["Close"].rolling(50).mean()
-    d["EMA12"] = d["Close"].ewm(span=12, adjust=False).mean()
-    d["EMA26"] = d["Close"].ewm(span=26, adjust=False).mean()
-    d["MACD"] = d["EMA12"] - d["EMA26"]
-    d["MACD_SIGNAL"] = d["MACD"].ewm(span=9, adjust=False).mean()
-    d["RSI14"] = rsi(d["Close"], 14)
-    d["ATR14"] = atr(d, 14)
-    d["RET20"] = d["Close"].pct_change(20)
-    d["VOL_MA20"] = d["Volume"].rolling(20).mean()
-    d["VOL_RATIO"] = d["Volume"] / d["VOL_MA20"]
+def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
+    try:
+        df = fetch_history(symbol)
+        if len(df) < 60:
+            return None
+        d = df.copy()
+        d["SMA20"] = d["Close"].rolling(20).mean()
+        d["SMA50"] = d["Close"].rolling(50).mean()
+        d["EMA12"] = d["Close"].ewm(span=12, adjust=False).mean()
+        d["EMA26"] = d["Close"].ewm(span=26, adjust=False).mean()
+        d["MACD"] = d["EMA12"] - d["EMA26"]
+        d["MACD_SIGNAL"] = d["MACD"].ewm(span=9, adjust=False).mean()
+        d["RSI14"] = rsi(d["Close"], 14)
+        d["ATR14"] = atr(d, 14)
+        d["RET20"] = d["Close"].pct_change(20)
+        d["VOL_MA20"] = d["Volume"].rolling(20).mean()
+        d["VOL_RATIO"] = d["Volume"] / d["VOL_MA20"]
+        d["CHG_PCT"] = d["Close"].pct_change() * 100
 
-    last = d.iloc[-1]
-    prev = d.iloc[-2]
-    score = 0
-    reasons = []
+        last = d.iloc[-1]
+        prev = d.iloc[-2]
+        score = 0
+        reasons = []
 
-    if last["Close"] > last["SMA20"]:
-        score += 1
-        reasons.append("Close above 20-day average")
-    else:
-        score -= 1
-        reasons.append("Close below 20-day average")
-
-    if last["SMA20"] > last["SMA50"]:
-        score += 1.5
-        reasons.append("20-day average above 50-day average")
-    else:
-        score -= 1.5
-        reasons.append("20-day average below 50-day average")
-
-    if last["MACD"] > last["MACD_SIGNAL"]:
-        score += 1
-        reasons.append("MACD above signal line")
-    else:
-        score -= 1
-        reasons.append("MACD below signal line")
-
-    if 50 <= last["RSI14"] <= 68:
-        score += 1
-        reasons.append("RSI in constructive bullish range")
-    elif last["RSI14"] > 75:
-        score -= 1
-        reasons.append("RSI overbought")
-    elif last["RSI14"] < 35:
-        score += 0.5
-        reasons.append("RSI oversold bounce zone")
-    else:
-        score -= 0.5
-        reasons.append("RSI not supportive")
-
-    if last["RET20"] > 0:
-        score += 0.5
-        reasons.append("20-session return positive")
-    else:
-        score -= 0.5
-        reasons.append("20-session return negative")
-
-    vol_ratio = float(last["VOL_RATIO"]) if pd.notna(last["VOL_RATIO"]) and np.isfinite(last["VOL_RATIO"]) else 1.0
-    if vol_ratio > 1.1:
-        if last["Close"] >= prev["Close"]:
-            score += 0.75
-            reasons.append("Above-average volume supports up move")
+        if last["Close"] > last["SMA20"]:
+            score += 1
+            reasons.append("Above 20DMA")
         else:
-            score -= 0.75
-            reasons.append("Above-average volume supports down move")
-    else:
-        reasons.append("Volume near average; conviction moderate")
+            score -= 1
+            reasons.append("Below 20DMA")
 
-    close = float(last["Close"])
-    atrv = float(last["ATR14"]) if pd.notna(last["ATR14"]) else max(close * 0.01, 50)
+        if last["SMA20"] > last["SMA50"]:
+            score += 1.5
+            reasons.append("20DMA above 50DMA")
+        else:
+            score -= 1.5
+            reasons.append("20DMA below 50DMA")
 
-    if score >= 2.5:
-        signal = "BUY"
-        entry_low = close - 0.25 * atrv
-        entry_high = close + 0.10 * atrv
-        stop_loss = close - 1.2 * atrv
-        target_1 = close + 1.2 * atrv
-        target_2 = close + 2.0 * atrv
-    elif score <= -2.5:
-        signal = "SELL"
-        entry_low = close - 0.10 * atrv
-        entry_high = close + 0.25 * atrv
-        stop_loss = close + 1.2 * atrv
-        target_1 = close - 1.2 * atrv
-        target_2 = close - 2.0 * atrv
-    else:
-        signal = "HOLD"
-        entry_low = close - 0.20 * atrv
-        entry_high = close + 0.20 * atrv
-        stop_loss = close - 1.0 * atrv
-        target_1 = close + 1.0 * atrv
-        target_2 = close + 1.6 * atrv
+        if last["MACD"] > last["MACD_SIGNAL"]:
+            score += 1
+            reasons.append("MACD bullish")
+        else:
+            score -= 1
+            reasons.append("MACD bearish")
 
-    strength = min(5, max(1, int(math.ceil(abs(score)))))
-    return SignalResult(
-        signal=signal,
-        strength=strength,
-        score=round(score, 2),
-        close=round(close, 2),
-        entry_low=round(entry_low, 2),
-        entry_high=round(entry_high, 2),
-        stop_loss=round(stop_loss, 2),
-        target_1=round(target_1, 2),
-        target_2=round(target_2, 2),
-        reasons=reasons,
-        rsi=round(float(last["RSI14"]), 2),
-        atr=round(float(last["ATR14"]), 2),
-        sma20=round(float(last["SMA20"]), 2),
-        sma50=round(float(last["SMA50"]), 2),
-        volume=float(last["Volume"]),
-        vol_avg=round(float(last["VOL_MA20"]), 2) if pd.notna(last["VOL_MA20"]) else 0,
-    )
+        if 50 <= last["RSI14"] <= 68:
+            score += 1
+            reasons.append("RSI supportive")
+        elif last["RSI14"] > 75:
+            score -= 1
+            reasons.append("RSI overbought")
+        elif last["RSI14"] < 35:
+            score += 0.5
+            reasons.append("RSI oversold")
+        else:
+            score -= 0.5
+            reasons.append("RSI mixed")
+
+        if last["RET20"] > 0:
+            score += 0.5
+            reasons.append("20D return positive")
+        else:
+            score -= 0.5
+            reasons.append("20D return negative")
+
+        vol_ratio = float(last["VOL_RATIO"]) if pd.notna(last["VOL_RATIO"]) and np.isfinite(last["VOL_RATIO"]) else 1.0
+        if vol_ratio > 1.1:
+            if last["Close"] >= prev["Close"]:
+                score += 0.75
+                reasons.append("Volume supports up move")
+            else:
+                score -= 0.75
+                reasons.append("Volume supports down move")
+        else:
+            reasons.append("Volume average")
+
+        close = float(last["Close"])
+        atrv = float(last["ATR14"])
+
+        if score >= 2.5:
+            signal = "BUY"
+            entry_low = close - 0.25 * atrv
+            entry_high = close + 0.10 * atrv
+            stop_loss = close - 1.2 * atrv
+            target_1 = close + 1.2 * atrv
+            target_2 = close + 2.0 * atrv
+        elif score <= -2.5:
+            signal = "SELL"
+            entry_low = close - 0.10 * atrv
+            entry_high = close + 0.25 * atrv
+            stop_loss = close + 1.2 * atrv
+            target_1 = close - 1.2 * atrv
+            target_2 = close - 2.0 * atrv
+        else:
+            signal = "HOLD"
+            entry_low = close - 0.20 * atrv
+            entry_high = close + 0.20 * atrv
+            stop_loss = close - 1.0 * atrv
+            target_1 = close + 1.0 * atrv
+            target_2 = close + 1.6 * atrv
+
+        return ScanRow(
+            symbol=symbol,
+            name=name,
+            signal=signal,
+            score=round(score, 2),
+            strength=min(5, max(1, int(math.ceil(abs(score))))),
+            close=round(close, 2),
+            chg_pct=round(float(last["CHG_PCT"]), 2) if pd.notna(last["CHG_PCT"]) else 0.0,
+            volume_ratio=round(vol_ratio, 2),
+            rsi=round(float(last["RSI14"]), 2),
+            sma20=round(float(last["SMA20"]), 2),
+            sma50=round(float(last["SMA50"]), 2),
+            entry_low=round(entry_low, 2),
+            entry_high=round(entry_high, 2),
+            stop_loss=round(stop_loss, 2),
+            target_1=round(target_1, 2),
+            target_2=round(target_2, 2),
+            reasons=reasons,
+        )
+    except Exception:
+        return None
 
 
-def make_chart(df: pd.DataFrame) -> go.Figure:
-    chart_df = df.copy()
-    chart_df["SMA20"] = chart_df["Close"].rolling(20).mean()
-    chart_df["SMA50"] = chart_df["Close"].rolling(50).mean()
+def make_chart(symbol: str) -> go.Figure:
+    df = fetch_history(symbol, period="6mo", interval="1d")
+    df["SMA20"] = df["Close"].rolling(20).mean()
+    df["SMA50"] = df["Close"].rolling(50).mean()
     fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=chart_df.index,
-        open=chart_df["Open"],
-        high=chart_df["High"],
-        low=chart_df["Low"],
-        close=chart_df["Close"],
-        name="NIFTY",
-    ))
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA20"], mode="lines", name="SMA20"))
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA50"], mode="lines", name="SMA50"))
-    fig.update_layout(height=550, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
+    fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=symbol))
+    fig.add_trace(go.Scatter(x=df.index, y=df["SMA20"], mode="lines", name="SMA20"))
+    fig.add_trace(go.Scatter(x=df.index, y=df["SMA50"], mode="lines", name="SMA50"))
+    fig.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
     return fig
 
 
-st.title("NIFTY 50 Live Analyzer")
-st.caption("Live-style analysis using Yahoo Finance via yfinance. Educational use only, not financial advice.")
+st.title("NIFTY 50 Stock Scanner")
+st.caption("Scans NIFTY 50 stocks individually and ranks BUY / HOLD / SELL signals using Yahoo Finance data. Educational only.")
 
 with st.sidebar:
-    st.header("Settings")
-    period = st.selectbox("History", ["3mo", "6mo", "1y", "2y"], index=1)
-    interval = st.selectbox("Interval", ["1d", "1h"], index=0)
-    refresh = st.button("Refresh now")
+    st.header("Scanner")
+    top_n = st.slider("How many stocks to show", 5, 20, 10)
+    signal_filter = st.selectbox("Signal filter", ["All", "BUY", "HOLD", "SELL"], index=1)
+    refresh = st.button("Refresh scan")
 
 if refresh:
     st.cache_data.clear()
 
-try:
-    df = fetch_data(period, interval)
-    sig = compute_signal(df)
-    last_date = df.index[-1]
+progress = st.progress(0, text="Scanning NIFTY 50 stocks...")
+results: List[ScanRow] = []
+items = list(NIFTY50.items())
+for i, (symbol, name) in enumerate(items, start=1):
+    row = analyze_symbol(symbol, name)
+    if row is not None:
+        results.append(row)
+    progress.progress(i / len(items), text=f"Scanning {i}/{len(items)}: {name}")
+progress.empty()
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Close", f"{sig.close:,.2f}")
-    c2.metric("Volume", f"{sig.volume:,.0f}")
-    c3.metric("RSI 14", f"{sig.rsi:.2f}")
-    c4.metric("Score", f"{sig.score:.2f}")
+if not results:
+    st.error("No stock data could be loaded right now.")
+    st.stop()
 
+scan_df = pd.DataFrame([
+    {
+        "Signal": r.signal,
+        "Score": r.score,
+        "Strength": r.strength,
+        "Symbol": r.symbol,
+        "Name": r.name,
+        "Close": r.close,
+        "1D %": r.chg_pct,
+        "RSI": r.rsi,
+        "Vol Ratio": r.volume_ratio,
+        "SMA20": r.sma20,
+        "SMA50": r.sma50,
+        "Entry Low": r.entry_low,
+        "Entry High": r.entry_high,
+        "Stop Loss": r.stop_loss,
+        "Target 1": r.target_1,
+        "Target 2": r.target_2,
+        "Reasons": ", ".join(r.reasons[:4]),
+    }
+    for r in results
+]).sort_values(["Score", "RSI"], ascending=[False, False])
+
+if signal_filter != "All":
+    scan_df = scan_df[scan_df["Signal"] == signal_filter]
+
+show_df = scan_df.head(top_n)
+
+buy_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signal"] == "BUY").sum())
+hold_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signal"] == "HOLD").sum())
+sell_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signal"] == "SELL").sum())
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("BUY signals", buy_count)
+c2.metric("HOLD signals", hold_count)
+c3.metric("SELL signals", sell_count)
+c4.metric("Stocks scanned", len(results))
+
+st.subheader("Scanner table")
+st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+if len(show_df) > 0:
+    selected_symbol = st.selectbox("Open chart for", show_df["Symbol"].tolist())
+    picked = next(r for r in results if r.symbol == selected_symbol)
     left, right = st.columns([1.7, 1])
     with left:
-        st.plotly_chart(make_chart(df), use_container_width=True)
-        st.dataframe(df.tail(20), use_container_width=True)
-
+        st.plotly_chart(make_chart(selected_symbol), use_container_width=True)
     with right:
-        color = {"BUY": "green", "SELL": "red", "HOLD": "orange"}[sig.signal]
-        st.markdown(f"## :{color}[{sig.signal}]")
-        st.write(f"**As of:** {last_date}")
-        st.write(f"**Strength:** {sig.strength}/5")
-        st.write(f"**Entry zone:** {sig.entry_low:,.2f} to {sig.entry_high:,.2f}")
-        st.write(f"**Stop loss:** {sig.stop_loss:,.2f}")
-        st.write(f"**Target 1:** {sig.target_1:,.2f}")
-        st.write(f"**Target 2:** {sig.target_2:,.2f}")
-        st.write(f"**SMA20 / SMA50:** {sig.sma20:,.2f} / {sig.sma50:,.2f}")
-        st.write(f"**ATR 14:** {sig.atr:,.2f}")
-        st.write(f"**20D avg volume:** {sig.vol_avg:,.0f}")
+        color = {"BUY": "green", "SELL": "red", "HOLD": "orange"}[picked.signal]
+        st.markdown(f"## :{color}[{picked.signal}] {picked.symbol}")
+        st.write(f"**Name:** {picked.name}")
+        st.write(f"**Close:** {picked.close:,.2f}")
+        st.write(f"**Score:** {picked.score:.2f}")
+        st.write(f"**Strength:** {picked.strength}/5")
+        st.write(f"**RSI:** {picked.rsi:.2f}")
+        st.write(f"**Volume ratio:** {picked.volume_ratio:.2f}")
+        st.write(f"**Entry zone:** {picked.entry_low:,.2f} to {picked.entry_high:,.2f}")
+        st.write(f"**Stop loss:** {picked.stop_loss:,.2f}")
+        st.write(f"**Target 1:** {picked.target_1:,.2f}")
+        st.write(f"**Target 2:** {picked.target_2:,.2f}")
         st.markdown("### Reasons")
-        for r in sig.reasons:
-            st.write(f"- {r}")
-        st.info("Index volume can differ by provider, so treat volume as a supporting signal.")
-
-except Exception as e:
-    st.error(f"Data fetch failed: {e}")
-    st.stop()
+        for reason in picked.reasons:
+            st.write(f"- {reason}")
+        st.info("This is a rules-based technical scanner, not guaranteed financial advice.")
