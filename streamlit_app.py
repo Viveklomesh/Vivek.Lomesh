@@ -83,6 +83,9 @@ class ScanRow:
     target_1: float
     target_2: float
     reasons: List[str]
+    summary: str
+    action_line: str
+    risk_line: str
     last_candle_time: str
     stale_days: int
     freshness_flag: str
@@ -131,6 +134,28 @@ def freshness_from_index(idx_value) -> tuple[str, int, str]:
     return ts_label, stale_days, "Fresh"
 
 
+def build_plain_language(signal: str, score: float, reasons: List[str], stale_days: int) -> tuple[str, str, str]:
+    core_reason = ", ".join(reasons[:3]).lower()
+    if signal == "BUY":
+        summary = f"This stock looks strong right now. Momentum and trend are supportive, so it may be worth considering for a short-term buy."
+        action = "Possible action: wait for the stock to trade near the entry zone, then buy only if price remains stable or moves up."
+        risk = "Risk check: keep a stop-loss in place because a good-looking setup can fail quickly in a weak market."
+    elif signal == "SELL":
+        summary = f"This stock looks weak right now. Trend and momentum are not supporting the price, so it may be better to avoid new buying or consider exiting a short-term position."
+        action = "Possible action: sell on strength or avoid fresh entry until the chart improves."
+        risk = "Risk check: if you still hold it, do not let the loss widen without a stop-loss plan."
+    else:
+        summary = f"This stock is giving mixed signals right now. It is not a strong buy or strong sell setup at the moment."
+        action = "Possible action: wait and watch instead of rushing into a trade."
+        risk = "Risk check: capital is usually better deployed in clearer setups."
+
+    if stale_days >= 1:
+        risk += " Also, the displayed price may be old, so verify it with NSE or your broker before taking action."
+
+    summary += f" Main signals: {core_reason}."
+    return summary, action, risk
+
+
 def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
     try:
         df = fetch_history(symbol)
@@ -157,55 +182,55 @@ def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
 
         if last["Close"] > last["SMA20"]:
             score += 1
-            reasons.append("Above 20DMA")
+            reasons.append("Price is above 20-day average")
         else:
             score -= 1
-            reasons.append("Below 20DMA")
+            reasons.append("Price is below 20-day average")
 
         if last["SMA20"] > last["SMA50"]:
             score += 1.5
-            reasons.append("20DMA above 50DMA")
+            reasons.append("Short-term trend is above medium-term trend")
         else:
             score -= 1.5
-            reasons.append("20DMA below 50DMA")
+            reasons.append("Short-term trend is below medium-term trend")
 
         if last["MACD"] > last["MACD_SIGNAL"]:
             score += 1
-            reasons.append("MACD bullish")
+            reasons.append("Momentum is turning positive")
         else:
             score -= 1
-            reasons.append("MACD bearish")
+            reasons.append("Momentum is turning weak")
 
         if 50 <= last["RSI14"] <= 68:
             score += 1
-            reasons.append("RSI supportive")
+            reasons.append("RSI is in a healthy bullish zone")
         elif last["RSI14"] > 75:
             score -= 1
-            reasons.append("RSI overbought")
+            reasons.append("RSI is too hot and may cool off")
         elif last["RSI14"] < 35:
             score += 0.5
-            reasons.append("RSI oversold")
+            reasons.append("RSI is oversold and may bounce")
         else:
             score -= 0.5
-            reasons.append("RSI mixed")
+            reasons.append("RSI is not strongly supportive")
 
         if last["RET20"] > 0:
             score += 0.5
-            reasons.append("20D return positive")
+            reasons.append("Recent 20-day return is positive")
         else:
             score -= 0.5
-            reasons.append("20D return negative")
+            reasons.append("Recent 20-day return is negative")
 
         vol_ratio = float(last["VOL_RATIO"]) if pd.notna(last["VOL_RATIO"]) and np.isfinite(last["VOL_RATIO"]) else 1.0
         if vol_ratio > 1.1:
             if last["Close"] >= prev["Close"]:
                 score += 0.75
-                reasons.append("Volume supports up move")
+                reasons.append("Volume is supporting the up move")
             else:
                 score -= 0.75
-                reasons.append("Volume supports down move")
+                reasons.append("Volume is supporting the down move")
         else:
-            reasons.append("Volume average")
+            reasons.append("Volume is around normal")
 
         close = float(last["Close"])
         atrv = float(last["ATR14"])
@@ -233,6 +258,8 @@ def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
             target_1 = close + 1.0 * atrv
             target_2 = close + 1.6 * atrv
 
+        summary, action_line, risk_line = build_plain_language(signal, score, reasons, stale_days)
+
         return ScanRow(
             symbol=symbol,
             name=name,
@@ -251,6 +278,9 @@ def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
             target_1=round(target_1, 2),
             target_2=round(target_2, 2),
             reasons=reasons,
+            summary=summary,
+            action_line=action_line,
+            risk_line=risk_line,
             last_candle_time=last_candle_time,
             stale_days=stale_days,
             freshness_flag=freshness_flag,
@@ -272,8 +302,8 @@ def make_chart(symbol: str) -> go.Figure:
 
 
 st.title("NIFTY 50 Stock Scanner")
-st.caption("Scans NIFTY 50 stocks individually and ranks BUY / HOLD / SELL signals using Yahoo Finance data. Educational only.")
-st.info("Prices come from Yahoo Finance via yfinance. Always cross-check execution price with NSE or your broker before trading.")
+st.caption("Now with simple-language recommendations for short-term traders.")
+st.info("This app explains each signal in plain English, but you should still verify the live price with NSE or your broker before trading.")
 
 with st.sidebar:
     st.header("Scanner")
@@ -304,25 +334,21 @@ if not results:
 scan_df = pd.DataFrame([
     {
         "Signal": r.signal,
-        "Score": r.score,
-        "Strength": r.strength,
         "Symbol": r.symbol,
         "Name": r.name,
         "Close": r.close,
-        "1D %": r.chg_pct,
-        "RSI": r.rsi,
-        "Vol Ratio": r.volume_ratio,
-        "SMA20": r.sma20,
-        "SMA50": r.sma50,
+        "Simple View": r.summary,
+        "Action": r.action_line,
         "Data Time": r.last_candle_time,
         "Age(D)": r.stale_days,
         "Status": r.freshness_flag,
+        "Score": r.score,
+        "RSI": r.rsi,
+        "Vol Ratio": r.volume_ratio,
         "Entry Low": r.entry_low,
         "Entry High": r.entry_high,
         "Stop Loss": r.stop_loss,
         "Target 1": r.target_1,
-        "Target 2": r.target_2,
-        "Reasons": ", ".join(r.reasons[:4]),
     }
     for r in results
 ]).sort_values(["Score", "RSI"], ascending=[False, False])
@@ -338,44 +364,51 @@ sell_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signa
 stale_count = int((pd.DataFrame([{ "stale": r.stale_days } for r in results])["stale"] >= 1).sum())
 
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("BUY signals", buy_count)
-c2.metric("HOLD signals", hold_count)
-c3.metric("SELL signals", sell_count)
-c4.metric("Stocks scanned", len(results))
+c1.metric("BUY", buy_count)
+c2.metric("HOLD", hold_count)
+c3.metric("SELL", sell_count)
+c4.metric("Scanned", len(results))
 c5.metric("Stale quotes", stale_count)
 
 st.caption(f"Scan started at {scan_started}")
 if stale_count > 0:
-    st.warning("Some stocks are using older candles. Check the Data Time / Age(D) columns and verify price with NSE or your broker before trading.")
+    st.warning("Some quotes may be old. Check the Data Time and Age(D) columns before placing a trade.")
 
-st.subheader("Scanner table")
+st.subheader("Recommendations")
 st.dataframe(show_df, use_container_width=True, hide_index=True)
 
 if len(show_df) > 0:
-    selected_symbol = st.selectbox("Open chart for", show_df["Symbol"].tolist())
+    selected_symbol = st.selectbox("Open detailed view for", show_df["Symbol"].tolist())
     picked = next(r for r in results if r.symbol == selected_symbol)
-    left, right = st.columns([1.7, 1])
+    left, right = st.columns([1.6, 1])
     with left:
         st.plotly_chart(make_chart(selected_symbol), use_container_width=True)
     with right:
-        color = {"BUY": "green", "SELL": "red", "HOLD": "orange"}[picked.signal]
-        st.markdown(f"## :{color}[{picked.signal}] {picked.symbol}")
-        st.write(f"**Name:** {picked.name}")
+        if picked.signal == "BUY":
+            st.success(f"{picked.name}: Buy setup", icon="✅")
+        elif picked.signal == "SELL":
+            st.error(f"{picked.name}: Sell / avoid setup", icon="🚫")
+        else:
+            st.warning(f"{picked.name}: Wait and watch setup", icon="⏳")
+
+        st.write(picked.summary)
+        st.write(f"**Suggested action:** {picked.action_line}")
+        st.write(f"**Risk note:** {picked.risk_line}")
+
+        st.markdown("### Trade levels")
         st.write(f"**Close:** {picked.close:,.2f}")
-        st.write(f"**Data timestamp:** {picked.last_candle_time}")
-        st.write(f"**Data age:** {picked.stale_days} day(s)")
-        st.write(f"**Data status:** {picked.freshness_flag}")
-        st.write(f"**Score:** {picked.score:.2f}")
-        st.write(f"**Strength:** {picked.strength}/5")
-        st.write(f"**RSI:** {picked.rsi:.2f}")
-        st.write(f"**Volume ratio:** {picked.volume_ratio:.2f}")
         st.write(f"**Entry zone:** {picked.entry_low:,.2f} to {picked.entry_high:,.2f}")
         st.write(f"**Stop loss:** {picked.stop_loss:,.2f}")
         st.write(f"**Target 1:** {picked.target_1:,.2f}")
         st.write(f"**Target 2:** {picked.target_2:,.2f}")
+
+        st.markdown("### Data check")
+        st.write(f"**Data timestamp:** {picked.last_candle_time}")
+        st.write(f"**Data age:** {picked.stale_days} day(s)")
+        st.write(f"**Data status:** {picked.freshness_flag}")
         if picked.stale_days >= 1:
-            st.warning("This price is not from the latest candle day. Cross-check on NSE or your broker before taking the trade.")
-        st.markdown("### Reasons")
-        for reason in picked.reasons:
-            st.write(f"- {reason}")
-        st.info("This is a rules-based technical scanner, not guaranteed financial advice.")
+            st.warning("This quote may not be the latest. Verify with NSE or your broker before acting.")
+
+        with st.expander("Why the app thinks this"):
+            for reason in picked.reasons:
+                st.write(f"- {reason}")
