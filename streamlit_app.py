@@ -1,6 +1,7 @@
 import math
 from dataclasses import dataclass
-from typing import List, Dict
+from datetime import datetime
+from typing import List
 
 import numpy as np
 import pandas as pd
@@ -82,6 +83,9 @@ class ScanRow:
     target_1: float
     target_2: float
     reasons: List[str]
+    last_candle_time: str
+    stale_days: int
+    freshness_flag: str
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -106,11 +110,25 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 @st.cache_data(ttl=300)
 def fetch_history(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
-    df = yf.download(symbol, period=period, interval=interval, auto_adjust=False, progress=False)
+    df = yf.download(symbol, period=period, interval=interval, auto_adjust=False, progress=False, ignore_tz=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
     df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    if hasattr(df.index, "tz") and df.index.tz is not None:
+        df.index = df.index.tz_localize(None)
     return df
+
+
+def freshness_from_index(idx_value) -> tuple[str, int, str]:
+    ts = pd.Timestamp(idx_value).to_pydatetime()
+    now = datetime.utcnow()
+    stale_days = max(0, (now.date() - ts.date()).days)
+    ts_label = ts.strftime("%Y-%m-%d %H:%M")
+    if stale_days >= 3:
+        return ts_label, stale_days, "Stale"
+    if stale_days >= 1:
+        return ts_label, stale_days, "Check"
+    return ts_label, stale_days, "Fresh"
 
 
 def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
@@ -191,6 +209,7 @@ def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
 
         close = float(last["Close"])
         atrv = float(last["ATR14"])
+        last_candle_time, stale_days, freshness_flag = freshness_from_index(d.index[-1])
 
         if score >= 2.5:
             signal = "BUY"
@@ -232,6 +251,9 @@ def analyze_symbol(symbol: str, name: str) -> ScanRow | None:
             target_1=round(target_1, 2),
             target_2=round(target_2, 2),
             reasons=reasons,
+            last_candle_time=last_candle_time,
+            stale_days=stale_days,
+            freshness_flag=freshness_flag,
         )
     except Exception:
         return None
@@ -251,16 +273,20 @@ def make_chart(symbol: str) -> go.Figure:
 
 st.title("NIFTY 50 Stock Scanner")
 st.caption("Scans NIFTY 50 stocks individually and ranks BUY / HOLD / SELL signals using Yahoo Finance data. Educational only.")
+st.info("Prices come from Yahoo Finance via yfinance. Always cross-check execution price with NSE or your broker before trading.")
 
 with st.sidebar:
     st.header("Scanner")
     top_n = st.slider("How many stocks to show", 5, 20, 10)
     signal_filter = st.selectbox("Signal filter", ["All", "BUY", "HOLD", "SELL"], index=1)
     refresh = st.button("Refresh scan")
+    st.caption("Cache refresh interval: 5 minutes")
 
 if refresh:
     st.cache_data.clear()
+    st.toast("Cache cleared. Fresh scan started.")
 
+scan_started = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 progress = st.progress(0, text="Scanning NIFTY 50 stocks...")
 results: List[ScanRow] = []
 items = list(NIFTY50.items())
@@ -288,6 +314,9 @@ scan_df = pd.DataFrame([
         "Vol Ratio": r.volume_ratio,
         "SMA20": r.sma20,
         "SMA50": r.sma50,
+        "Data Time": r.last_candle_time,
+        "Age(D)": r.stale_days,
+        "Status": r.freshness_flag,
         "Entry Low": r.entry_low,
         "Entry High": r.entry_high,
         "Stop Loss": r.stop_loss,
@@ -306,12 +335,18 @@ show_df = scan_df.head(top_n)
 buy_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signal"] == "BUY").sum())
 hold_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signal"] == "HOLD").sum())
 sell_count = int((pd.DataFrame([{ "Signal": r.signal } for r in results])["Signal"] == "SELL").sum())
+stale_count = int((pd.DataFrame([{ "stale": r.stale_days } for r in results])["stale"] >= 1).sum())
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("BUY signals", buy_count)
 c2.metric("HOLD signals", hold_count)
 c3.metric("SELL signals", sell_count)
 c4.metric("Stocks scanned", len(results))
+c5.metric("Stale quotes", stale_count)
+
+st.caption(f"Scan started at {scan_started}")
+if stale_count > 0:
+    st.warning("Some stocks are using older candles. Check the Data Time / Age(D) columns and verify price with NSE or your broker before trading.")
 
 st.subheader("Scanner table")
 st.dataframe(show_df, use_container_width=True, hide_index=True)
@@ -327,6 +362,9 @@ if len(show_df) > 0:
         st.markdown(f"## :{color}[{picked.signal}] {picked.symbol}")
         st.write(f"**Name:** {picked.name}")
         st.write(f"**Close:** {picked.close:,.2f}")
+        st.write(f"**Data timestamp:** {picked.last_candle_time}")
+        st.write(f"**Data age:** {picked.stale_days} day(s)")
+        st.write(f"**Data status:** {picked.freshness_flag}")
         st.write(f"**Score:** {picked.score:.2f}")
         st.write(f"**Strength:** {picked.strength}/5")
         st.write(f"**RSI:** {picked.rsi:.2f}")
@@ -335,6 +373,8 @@ if len(show_df) > 0:
         st.write(f"**Stop loss:** {picked.stop_loss:,.2f}")
         st.write(f"**Target 1:** {picked.target_1:,.2f}")
         st.write(f"**Target 2:** {picked.target_2:,.2f}")
+        if picked.stale_days >= 1:
+            st.warning("This price is not from the latest candle day. Cross-check on NSE or your broker before taking the trade.")
         st.markdown("### Reasons")
         for reason in picked.reasons:
             st.write(f"- {reason}")
